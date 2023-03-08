@@ -5,22 +5,20 @@ combinators for Nim.
 
 ## Example
 
-This is a snippet from the JSON tokenizer in the main source file.
+This is a snippet from the JSON tokenizer in the tests/ folder.
 
 ```nim
-when isMainModule:
-  # ...
-  let jsonSpace = {' ', '\t', '\r', '\n'}
-  let skipSpace = takeWhile((c) => c in jsonSpace)
-  let jsonStops = jsonSpace + {',', ']', '}'}
-  # eof counts as a JSON stop too
-  let expectJsonStop = peekCharP.validate("expected JSON stop", (mbc) => mbc.get(' ') in jsonStops)
+let jsonSpace = {' ', '\t', '\r', '\n'}
+let skipSpace = takeWhile((c) => c in jsonSpace)
+let jsonStops = jsonSpace + {',', ']', '}'}
+# eof counts as a JSON stop too
+let expectJsonStop = peekCharP.validate("expected JSON stop", (mbc) => mbc.get(' ') in jsonStops)
 
-  let parseIntRep = optional(stringp("-"), "") &> orElse(
-    stringp("0"),
-    charp({'1'..'9'}) &> takeWhile((c) => c in Digits)
-  )
-  let parseInt = (parseIntRep <* expectJsonStop).map(parseBiggestInt)
+let parseIntRep = optional(stringp("-"), "") &> orElse(
+  stringp("0"),
+  charp({'1'..'9'}) &> takeWhile((c) => c in Digits)
+)
+let parseInt = (parseIntRep <* expectJsonStop).map(parseBiggestInt)
 ```
 
 `parseIntRep` combines a sign parser and magnitude parser with `&>`, meaning its result is
@@ -34,18 +32,18 @@ write.
 The map operation makes `parseInt` a `Parser[int64]`.
 
 ```nim
-  let parseFracRep1 = charp('.') &> takeWhile1((c) => c in Digits)
-  let parseFracRep2 = charp({'e', 'E'}) &> optional(stringp("-") | stringp("+"), "") &> takeWhile1((c) => c in Digits)
-  # 4 cases, first 3 are floats: 1.23e4, 1.23, 123e4, 123
-  let parseFracRep = (parseFracRep1 &> optional(parseFracRep2, "")) | parseFracRep2
-  let parseFloatRep = parseIntRep &> parseFracRep
-  let parseFloat = (parseFloatRep <* expectJsonStop).tryMap(proc (s: string): Result[float64] =
-    var f: float64
-    let took = parseBiggestFloat(s, f)
-    if took < s.len:
-      return Fail[float64](fmt"Invalid float value {s}")
-    return Ok(f)
-  )
+let parseFracRep1 = charp('.') &> takeWhile1((c) => c in Digits)
+let parseFracRep2 = charp({'e', 'E'}) &> optional(stringp("-") | stringp("+"), "") &> takeWhile1((c) => c in Digits)
+# 4 cases, first 3 are floats: 1.23e4, 1.23, 123e4, 123
+let parseFracRep = (parseFracRep1 &> optional(parseFracRep2, "")) | parseFracRep2
+let parseFloatRep = parseIntRep &> parseFracRep
+let parseFloat = (parseFloatRep <* expectJsonStop).tryMap(proc (s: string): Result[float64] =
+  var f: float64
+  let took = parseBiggestFloat(s, f)
+  if took < s.len:
+    return Fail[float64](fmt"Invalid float value {s}")
+  return Ok(f)
+)
 ```
 
 Parsing floats is similar but slightly more complex. The `|` operator does the same thing

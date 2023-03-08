@@ -18,10 +18,10 @@ type
     of rkLeft: msg*: string
     of rkRight: val*: T
 
-proc Ok[T](val: T): Result[T] =
+proc Ok*[T](val: T): Result[T] =
   return Result[T](kind: rkRight, val: val)
 
-proc Fail[T](msg: string): Result[T] =
+proc Fail*[T](msg: string): Result[T] =
   return Result[T](kind: rkLeft, msg: msg)
 
 proc map*[T, R](this: Result[T], f: T -> R): Result[R] =
@@ -97,17 +97,17 @@ proc runParser*[T](this: Parser[T], s: string, debug: bool = false): (State, Res
       var col = -1
       while i >= 0 and i < s.len:
         let i2 = s.find('\n', i)
-        if last.pos <= i2:
+        if i2 < 0 or last.pos <= i2:
           col = last.pos - i
           break
         i = i2 + 1
         line += 1
-      return (last, Fail[T](fmt"{line}:{col} {res.msg}"))
+      return (last, Fail[T](fmt"line {line}:{col} {res.msg}"))
   return this.f(state0)
 
-proc parse*[T](this: Parser[T], s: string): Result[T] =
+proc parse*[T](this: Parser[T], s: string, debug: bool = false): Result[T] =
   ## Run a parser.
-  return this.runParser(s)[1]
+  return this.runParser(s, debug)[1]
 
 proc map*[T, R](this: Parser[T], transformer: T -> R): Parser[R] =
   ## Succeeds with `transformer(val)` if the base parser succeeds with `valT`.
@@ -442,182 +442,3 @@ proc scan*[S](scanner: (S, char) -> Option[S], first: S): Parser[string] =
   ## fail, and does not consume the character passed to the last invocation. The output
   ## is the consumed input. See also `foldWhile`, `runScanner`.
   return runScanner(scanner, first).map((pair) => pair[1])
-
-when isMainModule:
-  import std/parsejson
-  import std/parseutils
-  import std/unicode
-  type
-    Token = object
-      case kind: TokKind
-      of tkError, tkEof, tkTrue, tkFalse, tkNull, tkCurlyLe, tkCurlyRi, tkBracketLe, tkBracketRi, tkColon, tkComma:
-        discard
-      of tkString:
-        strVal: string
-      of tkInt:
-        intVal: int64
-      of tkFloat:
-        floatVal: float64
-
-  proc newJsonString(val: string): Token =
-    return Token(kind: tkString, strVal: val)
-  proc newJsonInt(val: int64): Token =
-    return Token(kind: tkInt, intVal: val)
-  proc newJsonFloat(val: float64): Token =
-    return Token(kind: tkFloat, floatVal: val)
-  proc newJsonTrue(): Token =
-    return Token(kind: tkTrue)
-  proc newJsonFalse(): Token =
-    return Token(kind: tkFalse)
-  proc newJsonNull(): Token =
-    return Token(kind: tkNull)
-  proc newJsonObjectStart(): Token =
-    return Token(kind: tkCurlyLe)
-  proc newJsonObjectEnd(): Token =
-    return Token(kind: tkCurlyRi)
-  proc newJsonArrayStart(): Token =
-    return Token(kind: tkBracketLe)
-  proc newJsonArrayEnd(): Token =
-    return Token(kind: tkBracketRi)
-  proc newJsonColon(): Token =
-    return Token(kind: tkColon)
-  proc newJsonComma(): Token =
-    return Token(kind: tkComma)
-
-  proc `$`(tok: Token): string =
-    case tok.kind
-    of tkError:
-      raise newException(ValueError, "parsec doesn't use error token")
-    of tkEof:
-      raise newException(ValueError, "parsec doesn't use eof")
-    of tkTrue:
-      return "#t"
-    of tkFalse:
-      return "#f"
-    of tkNull:
-      return "#nil"
-    of tkCurlyLe:
-      return "(hash "
-    of tkCurlyRi:
-      return ")"
-    of tkBracketLe:
-      return "'("
-    of tkBracketRi:
-      return ")"
-    of tkColon:
-      return " "
-    of tkComma:
-      return " "
-    of tkString:
-      let runes = cast[seq[int32]](toRunes(tok.strVal))
-      if runes.len > 0 and max(runes) > 1237:
-        return "(utf8 " & $runes & ")"
-      return '"' & tok.strVal & '"'
-    of tkInt:
-      return $tok.intVal
-    of tkFloat:
-      return $tok.floatVal
-
-  let jsonSpace = {' ', '\t', '\r', '\n'}
-  let skipSpace = takeWhile((c) => c in jsonSpace)
-  let jsonStops = jsonSpace + {',', ']', '}'}
-  # eof counts as a JSON stop too
-  let expectJsonStop = peekCharP.validate("expected JSON stop", (mbc) => mbc.get(' ') in jsonStops)
-  let parseIntRep = optional(stringp("-"), "") &> orElse(
-    stringp("0"),
-    charp({'1'..'9'}) &> takeWhile((c) => c in Digits)
-  )
-  let parseInt = (parseIntRep <* expectJsonStop).map(parseBiggestInt)
-  let parseFracRep1 = charp('.') &> takeWhile1((c) => c in Digits)
-  let parseFracRep2 = charp({'e', 'E'}) &> optional(stringp("-") | stringp("+"), "") &> takeWhile1((c) => c in Digits)
-  # 4 cases, first 3 are floats: 1.23e4, 1.23, 123e4, 123
-  let parseFracRep = (parseFracRep1 &> optional(parseFracRep2, "")) | parseFracRep2
-  let parseFloatRep = parseIntRep &> parseFracRep
-  let parseFloat = (parseFloatRep <* expectJsonStop).tryMap(proc (s: string): Result[float64] =
-    var f: float64
-    let took = parseBiggestFloat(s, f)
-    if took < s.len:
-      return Fail[float64](fmt"Invalid float value {s}")
-    return Ok(f)
-  )
-
-  # st: (chars remaining after this, hex value left of this)
-  proc fourHexScanner(st: (int, int), c: char): Option[(int, int)] =
-    if st[0] <= 0: return none[(int, int)]()
-    case c
-    of '0'..'9': return some((st[0] - 1, st[1]*16 + c.ord - '0'.ord))
-    of 'a'..'f': return some((st[0] - 1, st[1]*16 + 10 + c.ord - 'a'.ord))
-    of 'A'..'F': return some((st[0] - 1, st[1]*16 + 10 + c.ord - 'A'.ord))
-    else: return none[(int, int)]()
-
-  let parseEscape = charp('\\') >> anyChar.andThen(proc (c: char): Parser[string] =
-    case c
-    of '"', '\\', '/': return constp($c)
-    of 'b': return constp("\b")
-    of 'f': return constp("\f")
-    of 'n': return constp("\n")
-    of 'r': return constp("\r")
-    of 't': return constp("\t")
-    of 'u':
-      return foldWhile(fourHexScanner, (4, 0)).tryMap(
-        proc (st: (int, int)): Result[string] =
-          return if st[0] > 0: Fail[string]("Unicode escape ended early") else: Ok($Rune(st[1]))
-      )
-    else:
-      return failp(fmt"(\{c} is not a valid escape)")
-  )
-  proc parseStringRecur(): Parser[seq[string]] =
-    return takeWhile((c) => c notin {'"', '\\'}).andThen(proc(parsed1: string): Parser[seq[string]] =
-      return orElse(
-        charp('"') >> constp(@[parsed1]),
-        constp(@[parsed1]) &> count(parseEscape, 1) &> parseStringRecur()
-      )
-    )
-  let parseString = parseStringRecur().map(l => l.join(""))
-  let parseToken = skipSpace >> peekCharP.andThen(proc (mbc: Option[char]): Parser[Token] =
-    if mbc == some('{'):
-      return charp('{') >> constp(newJsonObjectStart())
-    elif mbc == some('}'):
-      return charp('}') >> constp(newJsonObjectEnd())
-    elif mbc == some('['):
-      return charp('[') >> constp(newJsonArrayStart())
-    elif mbc == some(']'):
-      return charp(']') >> constp(newJsonArrayEnd())
-    elif mbc == some(':'):
-      return charp(':') >> constp(newJsonColon())
-    elif mbc == some(','):
-      return charp(',') >> constp(newJsonComma())
-    elif mbc == some('n'):
-      return stringp("null") >> constp(newJsonNull())
-    elif mbc == some('t'):
-      return stringp("true") >> constp(newJsonTrue())
-    elif mbc == some('f'):
-      return stringp("false") >> constp(newJsonFalse())
-    elif mbc == some('"'):
-      return charp('"') >> parseString.map(newJsonString)
-    else:
-      return parseFloat.map(newJsonFloat) | parseInt.map(newJsonInt)
-  )
-  let tokenizer = manyTill(parseToken <* skipSpace, endOfInput)
-  proc showParse(inp: string) =
-    try:
-      echo fmt"input: {inp}"
-      let (st, res) = runParser(tokenizer, inp)
-      case res.kind
-      of rkLeft:
-        echo fmt"""Left "{res.msg}" @ {st.pos}"""
-      of rkRight:
-        echo "Right " & mapIt(res.val, $it).join("")
-    except Exception as e:
-      echo getStackTrace(e)
-
-  import std/os
-  import std/streams
-  for path in walkFiles("../JSONTestSuite/test_parsing/*.json"):
-    if path.splitPath().tail.startsWith("y_"):
-      let strm = openFileStream(path, fmRead)
-      let text = strm.readAll()
-      strm.close()
-      echo ""
-      echo path
-      showParse(text)
