@@ -1,10 +1,15 @@
+import std/json
+import std/math
 import std/options
+import std/os
 import std/parsejson
 import std/parseutils
 import std/sequtils
+import std/streams
 import std/strformat
 import std/strutils
 import std/sugar
+import std/times
 import std/unicode
 import unittest
 import nim_attoparsec
@@ -132,14 +137,12 @@ let parseEscape = charp('\\') >> anyChar.andThen(proc (c: char): Parser[string] 
   else:
     return failp[string](fmt"(\{c} is not a valid escape)")
 )
-proc parseStringRecur(): Parser[seq[string]] =
-  return takeTill({'"', '\\'}).andThen(proc(parsed1: string): Parser[seq[string]] =
-    return orElse(
-      charp('"') >> constp(@[parsed1]),
-      constp(@[parsed1]) &> count(parseEscape, 1) &> parseStringRecur()
-    )
+let parseString = recursiveParser(proc(self: Parser[string]): Parser[string] =
+  takeTill({'"', '\\'}) &> orElse(
+    charp('"') >> constp(""),
+    parseEscape &> self
   )
-let parseString = parseStringRecur().map(l => l.join(""))
+)
 let parseToken = skipSpace >> peekCharP.andThen(proc (mbc: Option[char]): Parser[Token] =
   if mbc == some('{'):
     return charp('{') >> constp(newJsonObjectStart())
@@ -247,3 +250,31 @@ test "can reject structure_uescaped_LF_before_string":
 test "can reject object_trailing_comment_slash_open":
   let res = tokenizer.parse("""{"a":"b"}//""", debug=true)
   check res.kind == rkindErr
+
+template benchmark(benchmarkName: string, iters: Natural,
+                   scales: openArray[(string, float)], code: untyped) =
+  block:
+    let t0 = cpuTime()
+    var currIter = 1
+    while currIter <= iters:
+      code
+      currIter += 1
+    let rate = float(iters) / (cpuTime() - t0)
+    let rateStr = formatFloat(rate, format = ffDecimal, precision = 6)
+    echo benchmarkName, ": ", iters, " iters"
+    echo "        ", rateStr, " it/s"
+    for (desc, v) in scales:
+      let scaledStr = formatFloat(v * rate, format = ffDecimal, precision = 6)
+      echo "        ", scaledStr, " ", desc, "/s"
+
+test "speed test":
+  for fname in walkFiles("tests/json/*.json"):
+    let strm = openFileStream(fname, fmRead)
+    let text = strm.readAll()
+    strm.close()
+    let iters = pow(10.0, round(7 - log10(float(text.len)))).int
+    let mb = float(text.len) / 1024.0 / 1024.0
+    benchmark(fname.splitFile().name & ".json", iters, [("MB", mb)]):
+      assert tokenizer.parse(text).kind == rkindOk
+    benchmark("stdlib", iters, [("MB", mb)]):
+      discard parseJson(text)

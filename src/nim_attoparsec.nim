@@ -471,3 +471,10 @@ proc scan*[S](scanner: proc(st: S, c: char): Option[S], first: S): Parser[string
   ## fail, and does not consume the character passed to the last invocation. The output
   ## is the consumed input. See also `foldWhile`, `runScanner`.
   return runScanner(scanner, first).map(proc(pair: (string, S)): string = return pair[0])
+
+proc recursiveParser*[T](gen: proc(self: Parser[T]): Parser[T]): Parser[T] =
+  ## Evaluates the parser generator, then replaces the 'self' that was given to the
+  ## generator with the created parser.
+  var bootstrap = constp(default(T))
+  result = gen(bootstrap)
+  bootstrap[] = result[]
