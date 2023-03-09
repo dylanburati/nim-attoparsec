@@ -85,17 +85,17 @@ proc `$`(tok: Token): string =
     return $tok.floatVal
 
 let jsonSpace = {' ', '\t', '\r', '\n'}
-let skipSpace = takeWhile((c) => c in jsonSpace)
+let skipSpace = takeWhile(jsonSpace)
 let jsonStops = jsonSpace + {',', ']', '}'}
 # eof counts as a JSON stop too
 let expectJsonStop = peekCharP.validate("expected JSON stop", (mbc) => mbc.get(' ') in jsonStops)
 let parseIntRep = optional(stringp("-"), "") &> orElse(
   stringp("0"),
-  charp({'1'..'9'}) &> takeWhile((c) => c in Digits)
+  charp({'1'..'9'}) &> takeWhile(Digits)
 )
 let parseInt = (parseIntRep <* expectJsonStop).map(parseBiggestInt)
-let parseFracRep1 = charp('.') &> takeWhile1((c) => c in Digits)
-let parseFracRep2 = charp({'e', 'E'}) &> optional(stringp("-") | stringp("+"), "") &> takeWhile1((c) => c in Digits)
+let parseFracRep1 = charp('.') &> takeWhile1(Digits)
+let parseFracRep2 = charp({'e', 'E'}) &> optional(stringp("-") | stringp("+"), "") &> takeWhile1(Digits)
 # 4 cases, first 3 are floats: 1.23e4, 1.23, 123e4, 123
 let parseFracRep = (parseFracRep1 &> optional(parseFracRep2, "")) | parseFracRep2
 let parseFloatRep = parseIntRep &> parseFracRep
@@ -133,7 +133,7 @@ let parseEscape = charp('\\') >> anyChar.andThen(proc (c: char): Parser[string] 
     return failp(fmt"(\{c} is not a valid escape)")
 )
 proc parseStringRecur(): Parser[seq[string]] =
-  return takeWhile((c) => c notin {'"', '\\'}).andThen(proc(parsed1: string): Parser[seq[string]] =
+  return takeTill({'"', '\\'}).andThen(proc(parsed1: string): Parser[seq[string]] =
     return orElse(
       charp('"') >> constp(@[parsed1]),
       constp(@[parsed1]) &> count(parseEscape, 1) &> parseStringRecur()

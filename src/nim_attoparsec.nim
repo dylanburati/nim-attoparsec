@@ -8,7 +8,6 @@ import std/options
 import std/strformat
 import std/strutils
 import std/sequtils
-import std/sugar
 
 type
   ResultKind* = enum
@@ -24,7 +23,7 @@ proc Ok*[T](val: T): Result[T] =
 proc Fail*[T](msg: string): Result[T] =
   return Result[T](kind: rkLeft, msg: msg)
 
-proc map*[T, R](this: Result[T], f: T -> R): Result[R] =
+proc map*[T, R](this: Result[T], f: proc(v: T): R): Result[R] =
   ## Maps a Result[T] to Result[R] by applying a function to a contained
   ## Ok value, leaving an Err value untouched.
   case this.kind
@@ -33,7 +32,7 @@ proc map*[T, R](this: Result[T], f: T -> R): Result[R] =
   of rkRight:
     return Ok(f(this.val))
 
-proc tryMap*[T, R](this: Result[T], f: T -> Result[R]): Result[R] =
+proc tryMap*[T, R](this: Result[T], f: proc(v: T): Result[R]): Result[R] =
   ## Calls op if the result is Ok, otherwise returns the Err value of this.
   case this.kind
   of rkLeft:
@@ -41,7 +40,7 @@ proc tryMap*[T, R](this: Result[T], f: T -> Result[R]): Result[R] =
   of rkRight:
     return f(this.val)
 
-proc validate*[T](this: Result[T], msg: string, f: T -> bool): Result[T] =
+proc validate*[T](this: Result[T], msg: string, f: proc(v: T): bool): Result[T] =
   ## Returns Err(msg) if the result is Ok but the value inside of it does not match
   ## the predicate.
   case this.kind
@@ -70,12 +69,15 @@ type
     str: ref string
     pos: int
   Parser*[T] = ref object
-    f: State -> (State, Result[T])
+    f: proc(s: State): (State, Result[T])
 
-proc advance(state: State, n: int): State =
+proc advance(state: State, n: int): State {.inline.} =
   return (str: state.str, pos: state.pos + n)
 
-proc newParser[T](f: State -> (State, Result[T])): Parser[T] =
+proc advanceTo(state: State, nextPos: int): State {.inline.} =
+  return (str: state.str, pos: nextPos)
+
+proc newParser[T](f: proc(s: State): (State, Result[T])): Parser[T] =
   new(result)
   result.f = f
 
@@ -89,9 +91,10 @@ proc runParser*[T](this: Parser[T], s: string, debug: bool = false): (State, Res
   let state0: State = (reference, 0)
   if debug:
     let (last, res) = this.f(state0)
-    if res.kind == rkRight:
+    case res.kind
+    of rkRight:
       return (last, res)
-    else:
+    of rkLeft:
       var i = 0
       var line = 1
       var col = -1
@@ -109,14 +112,14 @@ proc parse*[T](this: Parser[T], s: string, debug: bool = false): Result[T] =
   ## Run a parser.
   return this.runParser(s, debug)[1]
 
-proc map*[T, R](this: Parser[T], transformer: T -> R): Parser[R] =
+proc map*[T, R](this: Parser[T], transformer: proc(v: T): R): Parser[R] =
   ## Succeeds with `transformer(val)` if the base parser succeeds with `valT`.
   proc inner(s: State): (State, Result[R]) =
     let (nxt, res) = this.f(s)
     return (nxt, res.map(transformer))
   return newParser(inner)
 
-proc tryMap*[T, R](this: Parser[T], transformer: T -> Result[R]): Parser[R] =
+proc tryMap*[T, R](this: Parser[T], transformer: proc(v: T): Result[R]): Parser[R] =
   ## Succeeds with `valR` if the base parser succeeds with `valT` and the
   ## transformer returns `Ok(valR)`.
   proc inner(s: State): (State, Result[R]) =
@@ -125,7 +128,7 @@ proc tryMap*[T, R](this: Parser[T], transformer: T -> Result[R]): Parser[R] =
     return (nxt, res2)
   return newParser(inner)
 
-proc validate*[T](this: Parser[T], msg: string, check: T -> bool): Parser[T] =
+proc validate*[T](this: Parser[T], msg: string, check: proc(v: T): bool): Parser[T] =
   ## Succeeds if the base parser succeeds and the value it outputs passes a
   ## check.
   proc inner(s: State): (State, Result[T]) =
@@ -134,7 +137,7 @@ proc validate*[T](this: Parser[T], msg: string, check: T -> bool): Parser[T] =
     return (nxt, res2)
   return newParser(inner)
 
-proc andThen*[T1, T2](p1: Parser[T1], p2gen: T1 -> Parser[T2]): Parser[T2] =
+proc andThen*[T1, T2](p1: Parser[T1], p2gen: proc(v: T1): Parser[T2]): Parser[T2] =
   ## Composes the first parser with a function that makes a second parser from
   ## the first's output. Like Haskell Monad `>>=`.
   proc inner(s: State): (State, Result[T2]) =
@@ -144,33 +147,28 @@ proc andThen*[T1, T2](p1: Parser[T1], p2gen: T1 -> Parser[T2]): Parser[T2] =
       return (nxt1, Fail[T2](res1.msg))
     of rkRight:
       let p2 = p2gen(res1.val)
-      let (nxt2, res2) = p2.f(nxt1)
-      case res2.kind
-      of rkLeft:
-        return (nxt2, Fail[T2](fmt"andThen[{s.pos},{nxt1.pos}] {res2.msg}"))
-      of rkRight:
-        return (nxt2, res2)
+      return p2.f(nxt1)
   return newParser(inner)
 
 proc andAdd*[T](p1: Parser[T], p2: Parser[T]): Parser[T] =
   ## Succeeds with the value `val1 & val2` if the first parser succeeds with
   ## `val1` and the second parser succeeds with `val2`.
   proc gen(parsed1: T): Parser[T] =
-    return p2.map((parsed2) => parsed1 & parsed2)
+    return p2.map(proc(parsed2: T): T = return parsed1 & parsed2)
   return p1.andThen(gen)
 
 proc andAdd*(p1: Parser[string], p2: Parser[char]): Parser[string] =
   ## Succeeds with the value `val1 & val2` if the first parser succeeds with
   ## `val1` and the second parser succeeds with `val2`.
   proc gen(parsed1: string): Parser[string] =
-    return p2.map((parsed2) => parsed1 & parsed2)
+    return p2.map(proc(parsed2: char): string = return parsed1 & parsed2)
   return p1.andThen(gen)
 
 proc andAdd*(p1: Parser[char], p2: Parser[string]): Parser[string] =
   ## Succeeds with the value `val1 & val2` if the first parser succeeds with
   ## `val1` and the second parser succeeds with `val2`.
   proc gen(parsed1: char): Parser[string] =
-    return p2.map((parsed2) => parsed1 & parsed2)
+    return p2.map(proc(parsed2: string): string = return parsed1 & parsed2)
   return p1.andThen(gen)
 
 proc orElse*[T](p1, p2: Parser[T]): Parser[T] =
@@ -182,12 +180,7 @@ proc orElse*[T](p1, p2: Parser[T]): Parser[T] =
     of rkRight:
       return (nxt, res)
     of rkLeft:
-      let (nxt, res) = p2.f(s)
-      case res.kind
-      of rkLeft:
-        return (nxt, Fail[T](fmt"orElse {res.msg}"))
-      of rkRight:
-        return (nxt, res)
+      return p2.f(s)
   return newParser(inner)
 
 proc `<*`*[T1, T2](this: Parser[T1], rparser: Parser[T2]): Parser[T1] =
@@ -275,7 +268,7 @@ proc count*[T](parser: Parser[T], n: int): Parser[seq[T]] =
       mys = nxt
       case res.kind
       of rkLeft:
-        return (mys, Fail[seq[T]](fmt"count[{s.pos}] {res.msg}"))
+        return (mys, Fail[seq[T]](fmt"count {res.msg}"))
       of rkRight:
         fullparsed.add(res.val)
     return (mys, Ok(fullparsed))
@@ -293,7 +286,7 @@ proc manyTill*[T, Any](parser: Parser[T], endParser: Parser[Any]): Parser[seq[T]
   ## Returns a parser which applies the first parser zero or more times in a
   ## loop which exits when `endParser` succeeds. The `endParser` can consume input
   ## if it succeeds, but its output won't be saved.
-  proc inner(s: State): (State, Result[seq[T]]) =
+  proc evalManyTill(s: State): (State, Result[seq[T]]) =
     var mys = s
     var fullparsed: seq[T]
     while true:
@@ -304,10 +297,10 @@ proc manyTill*[T, Any](parser: Parser[T], endParser: Parser[Any]): Parser[seq[T]
       mys = nxt
       case res.kind
       of rkLeft:
-        return (nxt, Fail[seq[T]](fmt"manyTill[{s.pos}] {res.msg}"))
+        return (nxt, Fail[seq[T]](fmt"manyTill {res.msg}"))
       of rkRight:
         fullparsed.add(res.val)
-  return newParser(inner)
+  return newParser(evalManyTill)
 
 proc anyCharImpl(s: State): (State, Result[char]) =
   if s.pos < s.str[].len:
@@ -318,32 +311,32 @@ proc anyCharImpl(s: State): (State, Result[char]) =
 let anyChar*: Parser[char] = newParser(anyCharImpl)
 ## Matches any character.
 
-proc satisfy*(test: (char) -> bool): Parser[char] =
+proc satisfy*(test: proc(c: char): bool): Parser[char] =
   ## Matches a character with a predicate.
-  proc inner(s: State): (State, Result[char]) =
+  proc evalSatisfy(s: State): (State, Result[char]) =
     if s.pos < s.str[].len and test(s.str[s.pos]):
       return (s.advance(1), Ok(s.str[s.pos]))
     else:
       return (s, Fail[char]("satisfy"))
-  return newParser(inner)
+  return newParser(evalSatisfy)
 
 proc charp*(c: char): Parser[char] =
   ## Matches a specific character.
-  proc inner(s: State): (State, Result[char]) =
+  proc evalCharpEq(s: State): (State, Result[char]) =
     if s.pos < s.str[].len and c == s.str[s.pos]:
       return (s.advance(1), Ok(s.str[s.pos]))
     else:
       return (s, Fail[char]("charp"))
-  return newParser(inner)
+  return newParser(evalCharpEq)
 
 proc charp*(cs: set[char]): Parser[char] =
   ## Matches any character in the given set.
-  proc inner(s: State): (State, Result[char]) =
+  proc evalCharpElem(s: State): (State, Result[char]) =
     if s.pos < s.str[].len and s.str[s.pos] in cs:
       return (s.advance(1), Ok(s.str[s.pos]))
     else:
       return (s, Fail[char]("charp"))
-  return newParser(inner)
+  return newParser(evalCharpElem)
 
 proc peekImpl(s: State): (State, Result[Option[char]]) =
   if s.pos >= s.str[].len:
@@ -357,44 +350,54 @@ let peekCharP*: Parser[Option[char]] = newParser(peekImpl)
 
 proc stringp*(toMatch: string): Parser[string] =
   ## Matches the given string exactly.
-  proc inner(s: State): (State, Result[string]) =
+  proc evalStringp(s: State): (State, Result[string]) =
     let matchEnd = s.pos + toMatch.len
     if matchEnd > s.str[].len:
       return (s, Fail[string]("stringp"))
     if s.str[s.pos..<matchEnd] != toMatch:
       return (s, Fail[string]("stringp"))
     return (s.advance(toMatch.len), Ok(s.str[s.pos..<matchEnd]))
-  return newParser(inner)
+  return newParser(evalStringp)
 
 proc take*(n: int): Parser[string] =
   ## Matches the next `n` characters, or fails if there are less than `n`
   ## remaining in the input.
-  proc inner(s: State): (State, Result[string]) =
+  proc evalTake(s: State): (State, Result[string]) =
     let maxSize = s.str[].len - s.pos
     if n > maxSize:
       return (s, Fail[string]("stringp"))
     return (s.advance(n), Ok(s.str[s.pos..<s.pos + n]))
-  return newParser(inner)
+  return newParser(evalTake)
 
-proc takeWhileImpl(test: char -> bool, minSize: int): Parser[string] =
-  proc inner(s: State): (State, Result[string]) =
-    let maxSize = s.str[].len - s.pos
-    for i in 0 ..< maxSize:
-      if not test(s.str[s.pos + i]):
-        if i < minSize:
-          return (s, Fail[string]("takeWhile1"))
-        # note: does not consume the char which fails the test
-        return (s.advance(i), Ok(s.str[s.pos..<s.pos + i]))
-    return (s.advance(maxSize), Ok(s.str[s.pos..^1]))
-  return newParser(inner)
+proc takeTillImpl(exclset: set[char], minSize: int, label: string): Parser[string] =
+  proc evalTakeTill(s: State): (State, Result[string]) =
+    var nextPos = s.str[].find(exclset, s.pos)
+    if nextPos == -1:
+      nextPos = s.str[].len
+    if nextPos - s.pos < minSize:
+      return (s, Fail[string](label))
+    return (s.advanceTo(nextPos), Ok(s.str[s.pos..<nextPos]))
+  return newParser(evalTakeTill)
 
-proc takeWhile*(test: char -> bool): Parser[string] =
-  ## Takes zero or more characters from the input while the predicate succeeds.
-  return takeWhileImpl(test, 0)
+proc takeWhile*(allowset: set[char]): Parser[string] =
+  ## Takes zero or more characters from the input, until any character outside
+  ## the set is found.
+  return takeTillImpl(AllChars - allowset, 0, "takeWhile")
 
-proc takeWhile1*(test: char -> bool): Parser[string] =
-  ## Takes one or more characters from the input while the predicate succeeds.
-  return takeWhileImpl(test, 1)
+proc takeWhile1*(allowset: set[char]): Parser[string] =
+  ## Takes one or more characters from the input, until any character outside
+  ## the set is found.
+  return takeTillImpl(AllChars - allowset, 1, "takeWhile1")
+
+proc takeTill*(exclset: set[char]): Parser[string] =
+  ## Takes zero or more characters from the input, until any character in the
+  ## set is found.
+  return takeTillImpl(exclset, 0, "takeTill")
+
+proc takeTill1*(exclset: set[char]): Parser[string] =
+  ## Takes one or more characters from the input, until any character in the
+  ## set is found.
+  return takeTillImpl(exclset, 1, "takeTill1")
 
 # Not ported yet
 # proc sepBy1*(sep: Parser, parser: Parser): Parser =
@@ -411,34 +414,33 @@ proc takeWhile1*(test: char -> bool): Parser[string] =
 #     return sepBy(sep, comb()).parse(s)
 #   return newParser(f=curried)
 
-proc runScanner*[S](scanner: (S, char) -> Option[S], first: S): Parser[(string, S)] =
+proc runScanner*[S](scanner: proc(st: S, c: char): Option[S], first: S): Parser[(string, S)] =
   ## A stateful scanner. The parser consumes characters one-by-one and repeatedly
   ## updates the state as long as the function returns a `some()`. This parser does not
   ## fail, and does not consume the character passed to the last invocation. The output
   ## includes the last state.
-  proc inner(s: State): (State, Result[(string, S)]) =
+  proc doScan(s: State): (State, Result[(string, S)]) =
     let maxSize = s.str[].len - s.pos
     var scanVal = first
     for i in 0 ..< maxSize:
       let maybeScanVal = scanner(scanVal, s.str[s.pos + i])
       if isNone(maybeScanVal):
-        # note: does not consume the char for which scanner returns None
         return (s.advance(i), Ok((s.str[][s.pos..<s.pos + i], scanVal)))
       else:
         scanVal = maybeScanVal.get
     return (s.advance(maxSize), Ok((s.str[][s.pos..^1], scanVal)))
-  return newParser(inner)
+  return newParser(doScan)
 
-proc foldWhile*[S](scanner: (S, char) -> Option[S], first: S): Parser[S] =
+proc foldWhile*[S](scanner: proc(st: S, c: char): Option[S], first: S): Parser[S] =
   ## A stateful scanner. The parser consumes characters one-by-one and repeatedly
   ## updates the state as long as the function returns a `some()`. This parser does not
   ## fail, and does not consume the character passed to the last invocation. The output
   ## is the last state. See also `scan`, `runScanner`.
-  return runScanner(scanner, first).map((pair) => pair[1])
+  return runScanner(scanner, first).map(proc(pair: (string, S)): S = return pair[1])
 
-proc scan*[S](scanner: (S, char) -> Option[S], first: S): Parser[string] =
+proc scan*[S](scanner: proc(st: S, c: char): Option[S], first: S): Parser[string] =
   ## A stateful scanner. The parser consumes characters one-by-one and repeatedly
   ## updates the state as long as the function returns a `some()`. This parser does not
   ## fail, and does not consume the character passed to the last invocation. The output
   ## is the consumed input. See also `foldWhile`, `runScanner`.
-  return runScanner(scanner, first).map((pair) => pair[1])
+  return runScanner(scanner, first).map(proc(pair: (string, S)): string = return pair[0])
