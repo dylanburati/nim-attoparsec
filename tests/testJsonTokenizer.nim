@@ -103,7 +103,7 @@ let parseFloat = (parseFloatRep <* expectJsonStop).tryMap(proc (s: string): Resu
   var f: float64
   let took = parseBiggestFloat(s, f)
   if took < s.len:
-    return Fail[float64](fmt"Invalid float value {s}")
+    return Err[float64](fmt"Invalid float value {s}")
   return Ok(f)
 )
 
@@ -127,7 +127,7 @@ let parseEscape = charp('\\') >> anyChar.andThen(proc (c: char): Parser[string] 
   of 'u':
     return foldWhile(fourHexScanner, (4, 0)).tryMap(
       proc (st: (int, int)): Result[string] =
-        return if st[0] > 0: Fail[string]("Unicode escape ended early") else: Ok($Rune(st[1]))
+        return if st[0] > 0: Err[string]("Unicode escape ended early") else: Ok($Rune(st[1]))
     )
   else:
     return failp(fmt"(\{c} is not a valid escape)")
@@ -169,9 +169,9 @@ let tokenizer = manyTill(parseToken <* skipSpace, endOfInput)
 
 proc fromRight[T](res: Result[T]): T =
   case res.kind
-  of rkLeft:
+  of rkindErr:
     raise newException(ValueError, res.msg)
-  of rkRight:
+  of rkindOk:
     return res.val
 
 proc jsonToLisp(inp: string): string =
@@ -218,32 +218,32 @@ test "can handle number_simple_real":
 
 test "can reject number_1_000":
   let res = tokenizer.parse("[1 000.0]", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject number_with_alpha_char":
   let res = tokenizer.parse("[1.8011670033376514H-308]", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject number_with_leading_zero":
   let res = tokenizer.parse("[012]", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject number_-2.":
   let res = tokenizer.parse("[-2.]", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject number_infinity":
   let res = tokenizer.parse("[Infinity]", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject string_1_surrogate_then_escape_u":
   let res = tokenizer.parse("""["\uD800\u"]""", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject structure_uescaped_LF_before_string":
   let res = tokenizer.parse("""[\u000A""]""", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
 
 test "can reject object_trailing_comment_slash_open":
   let res = tokenizer.parse("""{"a":"b"}//""", debug=true)
-  check res.kind == rkLeft
+  check res.kind == rkindErr
