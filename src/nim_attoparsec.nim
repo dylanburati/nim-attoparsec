@@ -169,6 +169,24 @@ proc andCombine*[T1, T2, R](p1: Parser[T1], p2: Parser[T2], combiner: proc(a: T1
         return (nxt2, Ok(combiner(res1.val, res2.val)))
   return newParser(inner)
 
+proc andSwitch*[T1, T2, R](p1: Parser[T1], p2: Parser[T2], caseOk: proc(a: T1, b: T2): R, caseErr: proc(a: T1): R): Parser[R] =
+  ## Applies the first parser, and attempts to apply the second parser. On success,
+  ## outputs `caseOk(val1, val2)`, and on failure outputs `caseErr(val1)`.
+  ## Optimized version of `p1.andCombine(p2, caseOk) | p1.map(caseErr)`.
+  proc inner(s: State): (State, Result[R]) =
+    let (nxt1, res1) = p1.f(s)
+    case res1.kind
+    of rkindErr:
+      return (nxt1, Err[R](res1.msg))
+    of rkindOk:
+      let (nxt2, res2) = p2.f(nxt1)
+      case res2.kind
+      of rkindErr:
+        return (nxt1, Ok(caseErr(res1.val)))
+      of rkindOk:
+        return (nxt2, Ok(caseOk(res1.val, res2.val)))
+  return newParser(inner)
+
 proc andAdd*[T](p1: Parser[T], p2: Parser[T]): Parser[T] =
   ## Succeeds with the value `val1 & val2` if the first parser succeeds with
   ## `val1` and the second parser succeeds with `val2`.
@@ -233,7 +251,7 @@ proc constp*[T](val: T): Parser[T] =
     return (s, Ok(val))
   return newParser(inner)
 
-proc failp*[T](msg: T): Parser[T] =
+proc failp*[T](msg: string): Parser[T] =
   ## Errs with the given value.
   proc inner(s: State): (State, Result[T]) =
     return (s, Err[T](msg))
@@ -363,9 +381,7 @@ proc stringp*(toMatch: string): Parser[string] =
   ## Matches the given string exactly.
   proc evalStringp(s: State): (State, Result[string]) =
     let matchEnd = s.pos + toMatch.len
-    if matchEnd > s.str[].len:
-      return (s, Err[string]("stringp"))
-    if s.str[s.pos..<matchEnd] != toMatch:
+    if not s.str[].continuesWith(toMatch, s.pos):
       return (s, Err[string]("stringp"))
     return (s.advance(toMatch.len), Ok(s.str[s.pos..<matchEnd]))
   return newParser(evalStringp)

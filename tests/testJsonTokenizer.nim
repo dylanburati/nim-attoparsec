@@ -130,7 +130,7 @@ let parseEscape = charp('\\') >> anyChar.andThen(proc (c: char): Parser[string] 
         return if st[0] > 0: Err[string]("Unicode escape ended early") else: Ok($Rune(st[1]))
     )
   else:
-    return failp(fmt"(\{c} is not a valid escape)")
+    return failp[string](fmt"(\{c} is not a valid escape)")
 )
 proc parseStringRecur(): Parser[seq[string]] =
   return takeTill({'"', '\\'}).andThen(proc(parsed1: string): Parser[seq[string]] =
